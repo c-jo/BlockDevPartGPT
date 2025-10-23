@@ -1,0 +1,17 @@
+#ifndef GUID_H
+#define GUID_H
+
+#include <stdint.h>
+
+typedef struct {
+  uint32_t time_low;
+  uint16_t time_mid;
+  uint16_t time_high_ver;
+  uint16_t clock_seq_var;
+  uint8_t  node[6];
+} guid_t;
+
+int guid_parse(char *s, guid_t *u);
+char *guid_format(guid_t *u, char *buffer);
+
+#endif

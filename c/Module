@@ -1,0 +1,276 @@
+/*
+* Copyright (c) 2024, Chris Johns
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the copyright holder nor the names of their
+ *       contributors may be used to endorse or promote products derived from
+ *       this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <time.h>
+#include "swis.h"
+
+#include "Global/HALDevice.h"
+#include "Global/NewErrors.h"
+#include "DebugLib/DebugLib.h"
+
+#include "GPTDevice.h"
+#include "BlockDevPartGPTHdr.h"
+#include "BlockDevices.h"
+#include "GPT.h"
+
+#include "devices.h"
+
+static _kernel_oserror err_UnkDevice = { 0, "Unknown device" };
+static _kernel_oserror err_BadReason = { 0, "Bad reason code" };
+
+static const guid_t null_guid = { 0, 0, 0, 0, { 0, 0, 0, 0, 0, 0 } };
+
+//uint8_t NULL_GUID[] = { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 };
+/* A quick macro to silence compiler warnings about unused parameters */
+#define IGNORE(x) do { (void)(x); } while(0)
+
+static void register_device(gpt_device_t *device, void *pw)
+{
+  _kernel_oserror *e = _swix(BlockDevice_Register, _INR(1, 3)|_OUT(0),
+                                  &device->info,
+                                  driver_entry, pw,
+                                  &device->device_id);
+  if (e) {
+    /* Could not register, flag as such. Could be BlockDevices not loaded. */
+    dprintf(("", "failed to register device: %s\n", e->errmess));
+    device->device_id = DeviceId_Invalid;
+  } else {
+    dprintf(("", "register device: %d\n", device->device_id));
+  }
+}
+
+static void deregister_device(gpt_device_t *device, void *pw)
+{
+  IGNORE(pw);
+
+  _swix(BlockDevice_Deregister, _IN(0), device->device_id);
+}
+
+// Scan a device for a GPT partition table. This might be called from startup,
+// or as the result of a BlockDevice_DeviceAdded service call.
+static void device_added(unsigned device_id, void *pw)
+{
+  dprintf(("", "new device: %d. checking for GPT table\n", device_id));
+
+  device_info_t *info;
+  if (_swix(BlockDevice_Info, _IN(0)|_OUT(1), device_id, &info) != 0)
+    return;
+//  printf("%lld sectors of %d bytes\n", info->block_count, info->block_size);
+  unsigned gpt_size = (16*1024 / info->block_size) + 1;
+//  printf("GPT size if %d blocks\n", gpt_size);
+
+  void *gpt = malloc(gpt_size * info->block_size);
+  if (!gpt)
+    return;
+
+  transfer_block_t xb = { 1, gpt, gpt_size };
+  if (_swix(BlockDevice_Read, _INR(0,2), device_id, 0, &xb ) != 0) {
+    free(gpt);
+    return;
+  }
+
+  gpt_header_t *header = get_header( gpt, gpt_size * info->block_size );
+  if (!header) {
+    free(gpt);
+    return;
+  }
+
+//  printf("%d partitons of %d", header->entry_count, header->entry_size);
+//  printf("entries start at %lld\n", header->entries_start_lba);
+  int i;
+  for (i = 0; i < header->entry_count; i++) {
+    gpt_entry_t *entry = (gpt_entry_t*)((char*)gpt + info->block_size + (i * header->entry_size));
+    if (!memcmp(&entry->type_guid, &null_guid, 16))
+      continue;
+
+    dprintf(("", "%2d: %lld - %lld %s\n", i+1,
+             entry->first_lba, entry->last_lba,
+             guid_format(&entry->type_guid, NULL)));
+
+    gpt_device_t *last = devices;
+    while (last && last->next) last = last->next;
+    gpt_device_t *gpt_dev = malloc(sizeof(gpt_device_t));
+    if (gpt_dev) {
+      // sprintf(gpt_dev->name, "gpt-%d", i);
+
+      gpt_dev->prev = last;
+      gpt_dev->next = 0;
+      gpt_dev->parent_id = device_id;
+      gpt_dev->device_id = DeviceId_Invalid;
+      gpt_dev->offset = entry->first_lba;
+      gpt_dev->info.device_flags = 0;
+      gpt_dev->info.interface_type = info->interface_type;
+      gpt_dev->info.media_type = info->media_type;
+      gpt_dev->info.parent_device = device_id;
+      gpt_dev->info.block_count = entry->last_lba - entry->first_lba;
+      gpt_dev->info.block_size = info->block_size;
+      gpt_dev->info.description = "GPT Partition";
+
+      gpt_dev->type_guid = entry->type_guid;
+      gpt_dev->part_guid = entry->part_guid;
+
+      if (gpt_dev->prev == 0)
+        devices = gpt_dev;
+      else
+        gpt_dev->prev->next = gpt_dev;
+
+      register_device(gpt_dev, pw);
+    }
+  }
+
+  free(gpt);
+}
+
+// Remove the partitions associated with the given device (if any).
+static void device_removed(unsigned device_id, void *pw)
+{
+  dprintf(("", "device %d removed. removing any partitions\n", device_id));
+
+  gpt_device_t *device = devices;
+  while (device) {
+    dprintf(("", "  device %d, parent %d\n",
+             device->device_id, device->parent_id));
+
+    if (device->parent_id == device_id) {
+      gpt_device_t *old = device;
+      if (device->next) device->next->prev = device->prev;
+      if (device->prev) device->prev->next = device->next;
+        else devices = device->next;
+
+      deregister_device(old, pw);
+      free(old);
+    }
+    device = device->next;
+  }
+}
+
+// Scan for devices
+static void device_scan(void *pw)
+{
+  unsigned device_id = 0;
+
+  while (!_swix(BlockDevice_Enumerate, _IN(0)|_OUT(0),
+                device_id, &device_id)
+         && device_id != 0)
+  {
+    device_added(device_id, pw);
+  }
+}
+
+
+_kernel_oserror *module_initialise(const char *cmd_tail, int podule_base, void *pw)
+{
+  IGNORE(cmd_tail);
+  IGNORE(podule_base);
+
+  /* set up debugging */
+  debug_initialise(Module_Title, "", "");
+  debug_set_device(PRINTF_OUTPUT);
+  //debug_set_device(HAL_OUTPUT);
+  debug_set_stamp_debug(FALSE);
+
+  device_scan(pw);
+  return 0;
+}
+
+_kernel_oserror *module_finalise(int fatal, int podule, void *pw)
+{
+  IGNORE(fatal);
+  IGNORE(podule);
+
+  devices_deregister(pw, 1);
+  return 0;
+}
+
+void module_service(int service, _kernel_swi_regs *r, void *pw)
+{
+  dprintf(("", "Service call %d (&%x)\n", service, service));
+
+  switch (service)
+  {
+    case Service_BlockDevices_Dying:
+      while (devices) {
+        gpt_device_t *dev = devices;
+        devices = devices->next;
+        // No need to deregister, BlockDevices is dying anyway
+        free(dev);
+      }
+      break;
+
+    case Service_BlockDevices_DeviceAdded:
+      device_added(r->r[0], pw);
+      break;
+
+    case Service_BlockDevices_DeviceRemoved:
+      device_removed(r->r[0], pw);
+      break;
+  }
+}
+
+_kernel_oserror *driver_handler(_kernel_swi_regs *r, void *pw)
+{
+  IGNORE(pw);
+
+  gpt_device_t *device = devices_find(r->r[0]);
+  _kernel_oserror *e = 0;
+  transfer_block_t* xb = (transfer_block_t*)r->r[2];
+
+  if (!device) return &err_UnkDevice;
+
+  switch (r->r[8]) {
+
+  case BlockDeviceOp_Read:
+    xb->lba += device->offset;
+    e = _swix(BlockDevice_Read, _INR(0,2), device->parent_id, r->r[1], xb);
+    xb->lba -= device->offset;
+    break;
+
+  case BlockDeviceOp_Write:
+    xb->lba += device->offset;
+    e = _swix(BlockDevice_Write, _INR(0,2), device->parent_id, r->r[1], xb);
+    xb->lba -= device->offset;
+    break;
+
+  case BlockDeviceOp_DeviceOp:
+    if (r->r[1] == BlockDeviceOp_DeviceOp_PartitionInfo) {
+      r->r[0] = BlockDeviceOp_DeviceOp_PartionType_GPT;
+      r->r[1] = (unsigned)&device->type_guid;
+      r->r[1] = (unsigned)&device->part_guid;
+
+      return 0;
+    }
+    // fall-through
+  default:
+    e = &err_BadReason;
+  }
+
+  return e;
+}

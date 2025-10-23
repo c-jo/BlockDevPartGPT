@@ -1,0 +1,24 @@
+#include "GPT.h"
+#include "CRC32.h"
+
+#include <string.h>
+#include <stdio.h>
+
+gpt_header_t *get_header(void *data, int size)
+{
+  (void)size;
+
+  gpt_header_t *hdr = (gpt_header_t*)data;
+  if (strncmp(hdr->signature, "EFI PART", 8) != 0)
+    return 0;
+
+  uint32_t got_crc = hdr->header_crc;
+  hdr->header_crc = 0;
+  uint32_t calc_crc = crc32(hdr, hdr->header_size);
+  hdr->header_crc = got_crc;
+
+  if (got_crc != calc_crc)
+    return 0;
+
+  return hdr;
+}

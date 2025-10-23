@@ -1,0 +1,54 @@
+#include "GUID.h"
+#include <stdio.h>
+
+static uint16_t swap16(uint16_t v)
+{
+   return (v >> 8) + ((v & 0xff) << 8);
+}
+
+int guid_parse(char *s, guid_t *u)
+{
+  // Scan the string
+  int n = sscanf(s,
+     "%8x-%4hx-%4hx-%24hx-%2hhx%2hhx%2hhx%2hhx%2hhx%2hhx",
+     &u->time_low, &u->time_mid, &u->time_high_ver,
+     &u->clock_seq_var,
+     &u->node[0], &u->node[1], &u->node[2],
+     &u->node[3], &u->node[4], &u->node[5]);
+
+  // This one is big endian
+  u->clock_seq_var = swap16(u->clock_seq_var);
+
+  // Check everything converted
+  return (n == 10) ? 0 : -1;
+}
+
+char *guid_format(guid_t *u, char *buffer)
+{
+  static char _buffer[40];
+  if (buffer == 0) buffer = _buffer;
+  sprintf(buffer,
+     "%08x-%04hx-%04hx-%04x-%02x%02x%02x%02x%02x%02x",
+     u->time_low, u->time_mid, u->time_high_ver,
+     swap16(u->clock_seq_var),
+     u->node[0], u->node[1], u->node[2],
+     u->node[3], u->node[4], u->node[5]);
+
+  return buffer;
+}
+
+
+#ifdef TEST_GUID
+void main(void)
+{
+  uint8_t ext2[] = {0xaf, 0x3d, 0xc6, 0x0f, 0x83, 0x84, 0x72, 0x47, 0x8e, 0x79, 0x3d, 0x69, 0xd8, 0x47, 0x7d, 0xe4};
+  char *e2_str = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
+
+  printf("%d %d\n", sizeof(ext2), sizeof(guid_t));
+  printf("%s\n", guid_format((guid_t*)ext2, NULL));
+
+  guid_t uuid;
+  int r = guid_parse(e2_str, &uuid);
+  printf("%d %s\n", r, guid_format(&uuid, NULL));
+}
+#endif

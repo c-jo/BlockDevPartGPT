@@ -1,0 +1,21 @@
+; CMHG File for BlockDeviceTest
+
+#include "VersionNum"
+#include "BlockDevices.h"
+
+title-string: BlockDevPartGPT
+
+help-string: BlockDevPartGPT Module_MajorVersion_CMHG Module_MinorVersion_CMHG
+
+date-string: Module_Date_CMHG
+
+initialisation-code: module_initialise
+
+finalisation-code: module_finalise
+
+generic-veneers: driver_entry/driver_handler
+
+service-call-handler: module_service \
+    Service_BlockDevices_Dying, \
+    Service_BlockDevices_DeviceAdded, \
+    Service_BlockDevices_DeviceRemoved
