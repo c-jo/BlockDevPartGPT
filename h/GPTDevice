@@ -7,7 +7,7 @@
 #ifndef MBR_DEVICE_H
 #define MBR_DEVICE_H
 
-#include "BlockDevices.h"
+#include "Interface/BlockDevices.h"
 #include "GUID.h"
 
 typedef struct gpt_device_s {

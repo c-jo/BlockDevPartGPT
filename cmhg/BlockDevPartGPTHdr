@@ -1,7 +1,7 @@
 ; CMHG File for BlockDeviceTest
 
 #include "VersionNum"
-#include "BlockDevices.h"
+#include "Interface.BlockDevices.h"
 
 title-string: BlockDevPartGPT
 
@@ -16,6 +16,7 @@ finalisation-code: module_finalise
 generic-veneers: driver_entry/driver_handler
 
 service-call-handler: module_service \
+    Service_BlockDevices_Started, \
     Service_BlockDevices_Dying, \
     Service_BlockDevices_DeviceAdded, \
     Service_BlockDevices_DeviceRemoved

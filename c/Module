@@ -38,7 +38,7 @@
 
 #include "GPTDevice.h"
 #include "BlockDevPartGPTHdr.h"
-#include "BlockDevices.h"
+#include "Interface/BlockDevices.h"
 #include "GPT.h"
 
 #include "devices.h"
@@ -83,13 +83,14 @@ static void device_added(unsigned device_id, void *pw)
   device_info_t *info;
   if (_swix(BlockDevice_Info, _IN(0)|_OUT(1), device_id, &info) != 0)
     return;
-//  printf("%lld sectors of %d bytes\n", info->block_count, info->block_size);
+  dprintf(("", "%lld sectors of %d bytes\n", info->block_count, info->block_size));
   unsigned gpt_size = (16*1024 / info->block_size) + 1;
 //  printf("GPT size if %d blocks\n", gpt_size);
 
   void *gpt = malloc(gpt_size * info->block_size);
-  if (!gpt)
+  if (!gpt) {
     return;
+  }
 
   transfer_block_t xb = { 1, gpt, gpt_size };
   if (_swix(BlockDevice_Read, _INR(0,2), device_id, 0, &xb ) != 0) {
@@ -99,10 +100,12 @@ static void device_added(unsigned device_id, void *pw)
 
   gpt_header_t *header = get_header( gpt, gpt_size * info->block_size );
   if (!header) {
+    dprintf(("", "GPT header not found.\n"));
     free(gpt);
     return;
   }
 
+  dprintf(("", "GPT header found with %d entries.\n", header->entry_count));
 //  printf("%d partitons of %d", header->entry_count, header->entry_size);
 //  printf("entries start at %lld\n", header->entries_start_lba);
   int i;
@@ -119,23 +122,23 @@ static void device_added(unsigned device_id, void *pw)
     while (last && last->next) last = last->next;
     gpt_device_t *gpt_dev = malloc(sizeof(gpt_device_t));
     if (gpt_dev) {
-      // sprintf(gpt_dev->name, "gpt-%d", i);
+      gpt_dev->type_guid = entry->type_guid;
+      gpt_dev->part_guid = entry->part_guid;
 
       gpt_dev->prev = last;
       gpt_dev->next = 0;
       gpt_dev->parent_id = device_id;
       gpt_dev->device_id = DeviceId_Invalid;
       gpt_dev->offset = entry->first_lba;
-      gpt_dev->info.device_flags = 0;
+      gpt_dev->info.name = "gpt";
+      gpt_dev->info.flags = 0;
       gpt_dev->info.interface_type = info->interface_type;
+      gpt_dev->info.interface_connection = info->interface_connection;
       gpt_dev->info.media_type = info->media_type;
       gpt_dev->info.parent_device = device_id;
       gpt_dev->info.block_count = entry->last_lba - entry->first_lba;
       gpt_dev->info.block_size = info->block_size;
       gpt_dev->info.description = "GPT Partition";
-
-      gpt_dev->type_guid = entry->type_guid;
-      gpt_dev->part_guid = entry->part_guid;
 
       if (gpt_dev->prev == 0)
         devices = gpt_dev;
@@ -216,6 +219,10 @@ void module_service(int service, _kernel_swi_regs *r, void *pw)
 
   switch (service)
   {
+    case Service_BlockDevices_Started:
+      // device_scan(pw);
+      break;
+
     case Service_BlockDevices_Dying:
       while (devices) {
         gpt_device_t *dev = devices;
@@ -225,8 +232,11 @@ void module_service(int service, _kernel_swi_regs *r, void *pw)
       }
       break;
 
+
     case Service_BlockDevices_DeviceAdded:
-      device_added(r->r[0], pw);
+      //_swix(OS_AddCallback, _INR(0,1), device_added_cb, pw);
+      // need to do this on a calback
+       device_added(r->r[0], pw);
       break;
 
     case Service_BlockDevices_DeviceRemoved:
@@ -247,21 +257,21 @@ _kernel_oserror *driver_handler(_kernel_swi_regs *r, void *pw)
 
   switch (r->r[8]) {
 
-  case BlockDeviceOp_Read:
+  case BlockDevices_Reason_Read:
     xb->lba += device->offset;
     e = _swix(BlockDevice_Read, _INR(0,2), device->parent_id, r->r[1], xb);
     xb->lba -= device->offset;
     break;
 
-  case BlockDeviceOp_Write:
+  case BlockDevices_Reason_Write:
     xb->lba += device->offset;
     e = _swix(BlockDevice_Write, _INR(0,2), device->parent_id, r->r[1], xb);
     xb->lba -= device->offset;
     break;
 
-  case BlockDeviceOp_DeviceOp:
-    if (r->r[1] == BlockDeviceOp_DeviceOp_PartitionInfo) {
-      r->r[0] = BlockDeviceOp_DeviceOp_PartionType_GPT;
+  case BlockDevices_Reason_DeviceOp:
+    if (r->r[1] == BlockDevice_DeviceOp_PartitionInfo) {
+      r->r[0] = BlockDevice_PartitionType_GPT;
       r->r[1] = (unsigned)&device->type_guid;
       r->r[1] = (unsigned)&device->part_guid;
 
