@@ -54,9 +54,23 @@ static const guid_t null_guid = { 0, 0, 0, 0, { 0, 0, 0, 0, 0, 0 } };
 
 static void register_device(gpt_device_t *device, void *pw)
 {
+  device->device_id = DeviceId_Invalid;
+  device_info_t info;
+
+  info.name = "GPT";
+  info.flags = 0;
+  info.device_type = BlockDevice_DeviceType_Partition;
+  info.interface_type = BlockDevice_InterfaceType_Parent;
+  info.connection_type = BlockDevice_ConnectionType_Parent;
+  info.media_type = BlockDevice_MediaType_Parent;
+  info.parent_device = device->parent_id;
+  info.device_index = device->device_index;
+  info.block_count = device->block_count;
+  info.block_size = device->block_size;
+  info.description = device->description;
+
   _kernel_oserror *e = _swix(BlockDevice_Register, _INR(1, 3)|_OUT(0),
-                                  &device->info,
-                                  driver_entry, pw,
+                                  &info, driver_entry, pw,
                                   &device->device_id);
   if (e) {
     /* Could not register, flag as such. Could be BlockDevices not loaded. */
@@ -76,14 +90,18 @@ static void deregister_device(gpt_device_t *device, void *pw)
 
 // Scan a device for a GPT partition table. This might be called from startup,
 // or as the result of a BlockDevice_DeviceAdded service call.
-static void device_added(unsigned device_id, void *pw)
+static void device_added(unsigned device_id, device_info_t *info, void *pw)
 {
-  dprintf(("", "new device: %d. checking for GPT table\n", device_id));
+  dprintf(("", "new device: %d, device_type &%x\n", device_id, info->device_type));
 
-  device_info_t *info;
-  if (_swix(BlockDevice_Info, _IN(0)|_OUT(1), device_id, &info) != 0)
+  if (info->device_type != BlockDevice_DeviceType_Disc)
     return;
+
   dprintf(("", "%lld sectors of %d bytes\n", info->block_count, info->block_size));
+
+  if (info->block_count == 0 || info->block_size == 0)
+    return;
+
   unsigned gpt_size = (16*1024 / info->block_size) + 1;
 //  printf("GPT size if %d blocks\n", gpt_size);
 
@@ -114,6 +132,9 @@ static void device_added(unsigned device_id, void *pw)
     if (!memcmp(&entry->type_guid, &null_guid, 16))
       continue;
 
+    if (entry->first_lba >= entry->last_lba)
+      continue;
+
     dprintf(("", "%2d: %lld - %lld %s\n", i+1,
              entry->first_lba, entry->last_lba,
              guid_format(&entry->type_guid, NULL)));
@@ -122,23 +143,30 @@ static void device_added(unsigned device_id, void *pw)
     while (last && last->next) last = last->next;
     gpt_device_t *gpt_dev = malloc(sizeof(gpt_device_t));
     if (gpt_dev) {
+      sprintf(gpt_dev->description, "GPT Partition %d", i+1);
+      if (entry->name[0] != 0) {
+        char *d = gpt_dev->description;
+        unsigned j=0;
+        for (j=0; j < 36; ++j) {
+          if (entry->name[j] == 0) break;
+          *d++ = entry->name[j] & 0xff;
+        }
+        *d = 0;
+       }
+
       gpt_dev->type_guid = entry->type_guid;
       gpt_dev->part_guid = entry->part_guid;
 
       gpt_dev->prev = last;
       gpt_dev->next = 0;
-      gpt_dev->parent_id = device_id;
-      gpt_dev->device_id = DeviceId_Invalid;
+
+      gpt_dev->parent_id    = device_id;
+      gpt_dev->device_id    = DeviceId_Invalid;
+      gpt_dev->device_index = i+1;
+
       gpt_dev->offset = entry->first_lba;
-      gpt_dev->info.name = "gpt";
-      gpt_dev->info.flags = 0;
-      gpt_dev->info.interface_type = info->interface_type;
-      gpt_dev->info.interface_connection = info->interface_connection;
-      gpt_dev->info.media_type = info->media_type;
-      gpt_dev->info.parent_device = device_id;
-      gpt_dev->info.block_count = entry->last_lba - entry->first_lba;
-      gpt_dev->info.block_size = info->block_size;
-      gpt_dev->info.description = "GPT Partition";
+      gpt_dev->block_count = entry->last_lba - entry->first_lba;
+      gpt_dev->block_size = info->block_size;
 
       if (gpt_dev->prev == 0)
         devices = gpt_dev;
@@ -179,15 +207,16 @@ static void device_removed(unsigned device_id, void *pw)
 static void device_scan(void *pw)
 {
   unsigned device_id = 0;
+  device_info_t *info;
+  dprintf(("", "Scaning for devices."));
 
-  while (!_swix(BlockDevice_Enumerate, _IN(0)|_OUT(0),
-                device_id, &device_id)
+  while (!_swix(BlockDevice_Enumerate, _IN(0)|_OUTR(0,1),
+                device_id, &device_id, &info)
          && device_id != 0)
   {
-    device_added(device_id, pw);
+    device_added(device_id, info, pw);
   }
 }
-
 
 _kernel_oserror *module_initialise(const char *cmd_tail, int podule_base, void *pw)
 {
@@ -234,9 +263,7 @@ void module_service(int service, _kernel_swi_regs *r, void *pw)
 
 
     case Service_BlockDevices_DeviceAdded:
-      //_swix(OS_AddCallback, _INR(0,1), device_added_cb, pw);
-      // need to do this on a calback
-       device_added(r->r[0], pw);
+       device_added(r->r[0], (device_info_t*)r->r[2], pw);
       break;
 
     case Service_BlockDevices_DeviceRemoved:
@@ -269,11 +296,17 @@ _kernel_oserror *driver_handler(_kernel_swi_regs *r, void *pw)
     xb->lba -= device->offset;
     break;
 
+  case BlockDevices_Reason_Verify:
+    xb->lba += device->offset;
+    e = _swix(BlockDevice_Verify, _INR(0,2), device->parent_id, r->r[1], xb);
+    xb->lba -= device->offset;
+    break;
+
   case BlockDevices_Reason_DeviceOp:
     if (r->r[1] == BlockDevice_DeviceOp_PartitionInfo) {
-      r->r[0] = BlockDevice_PartitionType_GPT;
+      r->r[0] = BlockDevice_PartitionScheme_GPT;
       r->r[1] = (unsigned)&device->type_guid;
-      r->r[1] = (unsigned)&device->part_guid;
+      r->r[2] = (unsigned)&device->part_guid;
 
       return 0;
     }

@@ -1,7 +1,6 @@
 /*******************************************************************
  * File:        device
  * Purpose:     device interfacing
- * Author:      Gerph
  ******************************************************************/
 
 #ifndef MBR_DEVICE_H
@@ -13,15 +12,18 @@
 typedef struct gpt_device_s {
   struct gpt_device_s *prev;
   struct gpt_device_s *next;
-  device_info_t info;
-  int parent_id;
-  int device_id;
+  unsigned device_id;
+  unsigned parent_id;
+  unsigned device_index;
   uint64_t offset;
+  uint64_t block_count;
+  unsigned block_size;
   guid_t type_guid;
   guid_t part_guid;
+  char description[64];
 } gpt_device_t;
 
-/*************************************************** Gerph *********
+/*******************************************************************
  Function:      device_open
  Description:   Open the connection to a device
                 If we were successful, device_alive will return true.
@@ -32,7 +34,7 @@ typedef struct gpt_device_s {
 void device_open(gpt_device_t *device);
 
 
-/*************************************************** Gerph *********
+/*******************************************************************
  Function:      device_close
  Description:   Close the connection to a device
                 From here on, device_alive will report false.
@@ -41,7 +43,7 @@ void device_open(gpt_device_t *device);
  ******************************************************************/
 void device_close(gpt_device_t *device);
 
-/*************************************************** Gerph *********
+/*******************************************************************
  Function:      device_read
  Description:   Read the current speed
  Parameters:    device -> the device data
@@ -49,7 +51,7 @@ void device_close(gpt_device_t *device);
  ******************************************************************/
 int device_read(gpt_device_t *device);
 
-/*************************************************** Gerph *********
+/*******************************************************************
  Function:      device_setspeed
  Description:   Set the speed for the device
  Parameters:    device -> the device data

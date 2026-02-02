@@ -1,7 +1,6 @@
 /*******************************************************************
  * File:        devices
  * Purpose:     Device registration and management
- * Author:      Gerph
  ******************************************************************/
 
 #ifndef devices_H
@@ -11,7 +10,7 @@
 
 extern gpt_device_t *devices;
 
-/*************************************************** Gerph *********
+/*******************************************************************
  Function:      devices_register
  Description:   Register the devices we supply with the BlockDevices module
  Parameters:    pw = our private word
@@ -19,7 +18,7 @@ extern gpt_device_t *devices;
  ******************************************************************/
 void devices_register(void *pw);
 
-/*************************************************** Gerph *********
+/*******************************************************************
  Function:      devices_deregister
  Description:   Deregister the devices we supply with the BlockDevices module
                 and shut them down
@@ -32,7 +31,7 @@ void devices_register(void *pw);
  ******************************************************************/
 void devices_deregister(void *pw, int call_deregister);
 
-/*************************************************** Gerph *********
+/*******************************************************************
  Function:      devices_find
  Description:   Given the device_id, return the device structure
  Parameters:    device_id = device_id to look for
